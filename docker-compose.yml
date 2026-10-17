@@ -1,0 +1,34 @@
+# FalkorDB for local development.
+#
+# Both ports bind to 127.0.0.1 EXPLICITLY. Compose's default (`"6379:6379"`) binds 0.0.0.0, which
+# puts an unauthenticated graph database on every interface the machine has -- including conference
+# wifi. The loopback prefix is the whole difference and is easy to omit by accident.
+
+services:
+  falkordb:
+    # PINNED deliberately, not `latest`. This engine's behaviour is version-sensitive in ways that
+    # change results rather than erroring: on 6.0.1 a node binding dies across an aggregating WITH
+    # and `algo.betweenness` positional args raise, while on 4.22.x the binding survives and the
+    # positional call silently returns zero rows. `latest` served 6.0.1 during development and
+    # 4.22.1 afterwards, so an unpinned tag means a reviewer runs a different database than the one
+    # the measurements in the README came from. 4.22.x also matches FalkorDB Cloud's free tier.
+    image: falkordb/falkordb:v4.22.1
+    container_name: blastradius-falkordb
+    ports:
+      - "127.0.0.1:6379:6379"   # the database
+      - "127.0.0.1:3100:3000"   # FalkorDB Browser -- inspect the graph in the vendor's own tool
+    volumes:
+      - falkordb-data:/data
+    healthcheck:
+      # `make demo` chains ingest straight after startup, and the container accepts a TCP
+      # connection before the module is ready to serve a query -- so without this the first
+      # ingest can fail on a cold start.
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+      start_period: 3s
+    restart: unless-stopped
+
+volumes:
+  falkordb-data:

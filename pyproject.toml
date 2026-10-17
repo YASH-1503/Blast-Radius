@@ -1,0 +1,55 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "blast-radius"
+version = "1.0.0"
+description = "Incident-response agent whose context layer is a FalkorDB graph"
+readme = "README.md"
+requires-python = ">=3.11"
+
+# Runtime dependencies are pinned here AND in requirements.txt. requirements.txt is what a judge
+# following the README types; this is what makes `pip install -e .` work so the `src/` layout is
+# importable without a PYTHONPATH incantation. The lists must stay in step.
+dependencies = [
+    "falkordb==1.0.10",
+    "fastapi==0.115.6",
+    "uvicorn[standard]==0.34.0",
+    "pydantic==2.10.4",
+]
+
+[project.optional-dependencies]
+# Real sentence embeddings. Optional on purpose: the demo must start even when a 90 MB model
+# download fails on conference wifi, so embeddings.py falls back to a deterministic hash and
+# reports which backend is live.
+embeddings = ["fastembed==0.5.1"]
+# MCP transport, so an external MCP client can call the same tools the agent uses.
+# `mcp` is pinned alongside fastmcp, not left to the resolver. fastmcp 2.3.4 accepts mcp 1.30,
+# which drags in starlette 1.8 and pydantic 2.14 -- and those SILENTLY REPLACE the starlette 0.41
+# and pydantic 2.10 that fastapi 0.115 is pinned against, so installing this extra would break the
+# HTTP API and the test suite rather than the thing being installed. 1.12.4 is the newest that
+# resolves with zero changes to anything above.
+mcp = ["fastmcp==2.3.4", "mcp==1.12.4"]
+# Graph-native agent state machine.
+agents = ["langgraph==0.2.60"]
+dev = ["pytest==8.3.4", "httpx==0.28.1"]
+
+[project.scripts]
+br = "blast_radius.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Quiet, because the interesting output is the assertions' own messages.
+addopts = "-q --strict-markers"
+markers = [
+    "integration: needs a running FalkorDB",
+    "github: needs the GitHub cache populated (run `make fetch` once)",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"

@@ -1,0 +1,23 @@
+# Core -- the graph client. FalkorDB speaks the Redis wire protocol, so `redis` arrives with it.
+falkordb==1.0.10
+
+# HTTP API + SSE streaming
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+
+# Real embeddings: a local ONNX model, no API key and no network call at query time.
+fastembed==0.5.1
+
+# Agent state machine
+langgraph==0.2.60
+
+# MCP server, so any MCP-speaking client can call the same tools the agent uses.
+# `mcp` is pinned too: fastmcp 2.3.4 accepts mcp 1.30, which replaces starlette 0.41 with 1.8 and
+# pydantic 2.10 with 2.14 -- breaking the fastapi above instead of the thing being installed.
+fastmcp==2.3.4
+mcp==1.12.4
+
+# Tests
+pytest==8.3.4
+httpx==0.28.1

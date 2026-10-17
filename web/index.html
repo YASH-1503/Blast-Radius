@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Blast Radius -- graph-native incident reasoning</title>
+<!--
+  Cytoscape is VENDORED, not loaded from a CDN. The pre-event spike pulled it from unpkg, which
+  means the demo silently depends on the venue's wifi at the exact moment it is being judged. A
+  vendored copy also keeps the whole submission runnable with the network off, which is the same
+  property the GitHub cache gives the data layer.
+
+  If vendor/cytoscape.min.js is absent the graph panel degrades to a readable message instead of a
+  blank box, and every other panel still works.
+-->
+<script src="/static/cytoscape.min.js" onerror="window.__cytoscapeMissing = true"></script>
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --panel-2: #1c2128; --line: #30363d;
+    --text: #e6edf3; --dim: #8b949e; --accent: #58a6ff;
+    --ok: #3fb950; --warn: #d29922; --bad: #f85149; --real: #a371f7;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 12px 18px; border-bottom: 1px solid var(--line); background: var(--panel);
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 650; letter-spacing: .2px; }
+  header .tag { color: var(--dim); font-size: 12px; }
+  .grow { flex: 1; }
+  button, select {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--line);
+    border-radius: 6px; padding: 6px 12px; font: inherit; font-size: 13px; cursor: pointer;
+  }
+  button:hover:not(:disabled), select:hover { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: #1f6feb; border-color: #1f6feb; font-weight: 600; }
+  main { display: grid; grid-template-columns: 1fr 460px; height: calc(100vh - 58px); }
+  #graph { position: relative; background: var(--bg); }
+  #graph .empty {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    color: var(--dim); font-size: 13px; text-align: center; padding: 40px;
+  }
+  aside { border-left: 1px solid var(--line); overflow-y: auto; background: var(--panel); }
+  .pad { padding: 14px 16px; }
+  .bar {
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    padding: 10px 16px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--dim);
+  }
+  .card {
+    border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2);
+    margin: 0 16px 10px; overflow: hidden;
+  }
+  .card > .head {
+    display: flex; gap: 10px; align-items: baseline; padding: 9px 12px; cursor: pointer;
+  }
+  .card > .head:hover { background: #22272e; }
+  .card .agent {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .09em;
+    padding: 2px 7px; border-radius: 10px; font-weight: 700; flex-shrink: 0;
+  }
+  .agent.triage { background: #1f6feb33; color: #79c0ff; }
+  .agent.diagnosis { background: #d2992233; color: #e3b341; }
+  .agent.comms { background: #3fb95033; color: #56d364; }
+  .card .action { font-weight: 600; font-size: 13px; }
+  .card .ms { margin-left: auto; color: var(--dim); font-size: 11px; flex-shrink: 0; }
+  .card .note { padding: 0 12px 10px; color: var(--dim); font-size: 12.5px; }
+  .card .body { border-top: 1px solid var(--line); padding: 10px 12px; display: none; }
+  .card.open .body { display: block; }
+  pre {
+    margin: 6px 0 0; padding: 9px 10px; background: #0d1117; border: 1px solid var(--line);
+    border-radius: 6px; overflow-x: auto; font-size: 11.5px; line-height: 1.45;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #9fb4c9;
+  }
+  .kv { display: grid; grid-template-columns: 150px 1fr; gap: 2px 10px; font-size: 12.5px; }
+  .kv dt { color: var(--dim); }
+  .kv dd { margin: 0; word-break: break-word; }
+  .chip {
+    display: inline-block; padding: 1px 7px; border-radius: 10px; font-size: 11px;
+    border: 1px solid var(--line); margin: 1px 3px 1px 0; color: var(--dim);
+  }
+  .chip.real { border-color: var(--real); color: #c9a9ff; }
+  .chip.syn { border-color: var(--line); }
+  .verdict { border-color: var(--ok); }
+  .verdict .head { background: #3fb95018; }
+  .ruled { border-color: #6e7681; opacity: .9; }
+  .ruled .head { background: #d2992212; }
+  h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .08em;
+       color: var(--dim); margin: 16px 16px 8px; font-weight: 650; }
+  .legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: var(--dim);
+            padding: 8px 16px; border-top: 1px solid var(--line); }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%;
+              margin-right: 4px; vertical-align: middle; }
+  .err { color: var(--bad); }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Blast&nbsp;Radius</h1>
+  <span class="tag" id="dbinfo">connecting...</span>
+  <span class="grow"></span>
+  <label class="tag">tenant
+    <select id="tenant"></select>
+  </label>
+  <label class="tag"><input type="checkbox" id="showCommits"> show commits</label>
+  <button id="askAll">Ask the six questions</button>
+  <button id="run" class="primary">Run incident</button>
+</header>
+
+<main>
+  <section id="graph"><div class="empty" id="graphEmpty">loading graph...</div></section>
+  <aside>
+    <div class="bar" id="status">pick <b>Run incident</b> to start the three-agent loop</div>
+    <div id="panel"></div>
+    <div class="legend">
+      <span><i style="background:#58a6ff"></i>Service</span>
+      <span><i style="background:#a371f7"></i>Person (real)</span>
+      <span><i style="background:#3fb950"></i>Customer</span>
+      <span><i style="background:#d29922"></i>Deploy</span>
+      <span><i style="background:#f778ba"></i>Database</span>
+      <span><i style="background:#8b949e"></i>other</span>
+      <span><i style="background:#f85149"></i>walked by the selected step</span>
+    </div>
+  </aside>
+</main>
+
+<script>
+const PALETTE = {
+  Service: '#58a6ff', Person: '#a371f7', Customer: '#3fb950', Deploy: '#d29922',
+  Database: '#f778ba', Endpoint: '#39c5cf', Team: '#ffa657', Commit: '#6e7681',
+  PullRequest: '#8b949e', Incident: '#f85149', Runbook: '#56d364', Decision: '#e3b341',
+  Episode: '#bc8cff', AgentRun: '#79c0ff', Alert: '#f85149', Dependency: '#6e7681',
+};
+let cy = null, apiKey = null, steps = [];
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+async function api(path, opts = {}) {
+  const headers = Object.assign({'Content-Type': 'application/json'}, opts.headers || {});
+  if (apiKey) headers['Authorization'] = 'Bearer ' + apiKey;
+  const res = await fetch(path, Object.assign({}, opts, {headers}));
+  if (!res.ok) throw new Error(`${path} -> ${res.status} ${(await res.text()).slice(0, 200)}`);
+  return res.json();
+}
+
+/* The UI bootstraps its own key from the loopback-only /api/keys endpoint. The API is
+   authenticated by default, so without this a developer would have to paste a key out of the
+   server log before seeing anything -- and the easy way to avoid that would be to turn auth off,
+   which is exactly the wrong lesson. */
+async function bootstrapKey(tenant) {
+  const res = await fetch('/api/keys');
+  if (!res.ok) return null;
+  const { generated } = await res.json();
+  const line = (generated || []).find(l => l.startsWith(tenant + ':'));
+  return line ? line.split(':')[1].trim() : null;
+}
+
+async function boot() {
+  const health = await (await fetch('/api/health')).json();
+  $('dbinfo').textContent = health.ok
+    ? `FalkorDB ${health.db_latency_ms} ms · embeddings: ${health.embedding_backend}`
+      + `${health.semantic_embeddings ? '' : ' (hashed fallback)'}`
+    : 'database unreachable';
+  if (!health.ok) { $('dbinfo').className = 'tag err'; return; }
+
+  for (const t of ['acme', 'globex']) {
+    const o = document.createElement('option'); o.value = o.textContent = t; $('tenant').append(o);
+  }
+  await selectTenant('acme');
+}
+
+async function selectTenant(tenant) {
+  apiKey = await bootstrapKey(tenant);
+  $('panel').innerHTML = '';
+  steps = [];
+  await loadGraph();
+  await loadProvenance();
+}
+
+async function loadGraph() {
+  const empty = $('graphEmpty');
+  if (window.__cytoscapeMissing) {
+    empty.innerHTML = 'Graph rendering needs <code>web/vendor/cytoscape.min.js</code>.<br>'
+      + 'Every other panel works without it -- run <code>make vendor</code> to fetch it once.';
+    return;
+  }
+  const q = $('showCommits').checked ? '?labels=' + encodeURIComponent(
+      'Service,Database,Endpoint,Customer,Team,Person,Deploy,Commit') : '';
+  let data;
+  try { data = await api('/api/graph' + q); }
+  catch (e) { empty.textContent = e.message; return; }
+
+  empty.style.display = 'none';
+  /* `provenance`, NOT `source`. Cytoscape reserves `data.source` and `data.target` for an edge's
+     endpoints, so storing a node's provenance string under `source` collides with its own data
+     model -- the element filter below then compares a provenance label like "github" against the
+     set of node ids and the logic becomes accidental rather than intended. */
+  const elements = [
+    ...data.nodes.map(n => ({ data: {
+      id: String(n.id), label: n.title || n.id, kind: (n.labels || [])[0] || 'other',
+      provenance: n.properties?.source || '' } })),
+    ...data.edges.map(e => ({ data: {
+      id: 'e' + e.id, source: String(e.source), target: String(e.target), label: e.type } })),
+  ];
+  /* An edge whose endpoint fell outside the node LIMIT would make Cytoscape throw, so edges are
+     kept only when both ends are present. */
+  const known = new Set(data.nodes.map(n => String(n.id)));
+  const safe = elements.filter(el =>
+    el.data.kind !== undefined || (known.has(el.data.source) && known.has(el.data.target)));
+
+  if (cy) cy.destroy();
+  cy = cytoscape({
+    container: $('graph'),
+    elements: safe,
+    style: [
+      { selector: 'node', style: {
+          'background-color': el => PALETTE[el.data('kind')] || '#8b949e',
+          'label': 'data(label)', 'font-size': 8, 'color': '#8b949e',
+          'text-valign': 'bottom', 'text-margin-y': 3, 'width': 13, 'height': 13,
+          'border-width': el => el.data('provenance') === 'github' ? 1.5 : 0,
+          'border-color': '#a371f7' } },
+      { selector: 'node[kind = "Service"]', style: { width: 20, height: 20, 'font-size': 10, color: '#e6edf3' } },
+      { selector: 'edge', style: {
+          'width': .7, 'line-color': '#30363d', 'target-arrow-color': '#30363d',
+          'target-arrow-shape': 'triangle', 'arrow-scale': .5, 'curve-style': 'bezier' } },
+      { selector: '.walked', style: {
+          'background-color': '#f85149', 'width': 24, 'height': 24,
+          'color': '#ffd7d5', 'font-size': 11, 'z-index': 99,
+          'border-width': 2, 'border-color': '#ff7b72' } },
+      { selector: '.faded', style: { opacity: .12 } },
+    ],
+    layout: { name: 'cose', animate: false, nodeRepulsion: 9000, idealEdgeLength: 55,
+              padding: 30, randomize: false },
+  });
+  // `cose` lays out in its own coordinate space and does not guarantee the result sits inside the
+  // viewport -- on this graph the bottom row of services rendered clipped off the canvas edge. An
+  // explicit fit after layout is the difference between a screenshot that looks finished and one
+  // that looks cropped, and this was only visible in a rendered page.
+  //
+  // The hook matters: `cy.ready` fires before `cose` has placed anything, so fitting there fits
+  // the PRE-layout positions and the clipping survives -- which is exactly what the first attempt
+  // did. `layoutstop` is the correct event. The timeout is a fallback for the case where layout
+  // finished before this line ran, since a missed one-shot event would leave it cropped again.
+  const refit = () => cy.fit(undefined, 40);
+  cy.one('layoutstop', refit);
+  setTimeout(refit, 350);
+  window.addEventListener('resize', refit);
+  // Say what is NOT on screen as well as what is. The isolated nodes are real contributors whose
+  // only edge is to a Commit, and commits are hidden by default -- so silently dropping them would
+  // trade a broken-looking canvas for an undercount nobody could see. State the number instead.
+  // Kept terse because a longer string wraps the header onto a second row.
+  $('dbinfo').textContent += ` · ${data.node_count} nodes / ${data.edge_count} edges`
+    + (data.isolated_hidden ? ` (+${data.isolated_hidden} hidden)` : '')
+    + ` in ${data.elapsed_ms} ms`;
+}
+
+/* Highlighting works on EVERY step, not just the one that returns a path.
+   The spike highlighted only `path_between`, because the other nine queries return scalars and
+   strings with no node objects to harvest -- nine of ten steps lit up nothing. The fix is in the
+   query layer, not here: each query declares `focus_keys`, naming the result columns that hold
+   node names, so the server sends a `focus` list with every answer and this function has something
+   to highlight regardless of the result's shape. */
+function highlight(focus) {
+  if (!cy) return;
+  cy.elements().removeClass('walked faded');
+  if (!focus || !focus.length) return;
+  const wanted = new Set(focus.map(String));
+  const hits = cy.nodes().filter(n => wanted.has(n.data('label')));
+  if (!hits.length) return;
+  cy.elements().addClass('faded');
+  hits.removeClass('faded').addClass('walked');
+  hits.connectedEdges().removeClass('faded');
+  hits.neighborhood('node').removeClass('faded');
+}
+
+function stepCard(step, index) {
+  const ev = step.evidence;
+  const card = document.createElement('div');
+  card.className = 'card';
+  const focus = ev?.provenance?.focus || [];
+  card.innerHTML = `
+    <div class="head">
+      <span class="agent ${esc(step.agent)}">${esc(step.agent)}</span>
+      <span class="action">${esc(step.action)}</span>
+      ${ev ? `<span class="ms">${ev.elapsed_ms} ms · ${ev.row_count} row${ev.row_count === 1 ? '' : 's'}</span>` : ''}
+    </div>
+    <div class="note">${esc(step.note)}</div>
+    ${ev ? `<div class="body">
+      <dl class="kv">
+        <dt>hops allowed</dt><dd>${ev.hops ?? 'n/a'}</dd>
+        <dt>graph</dt><dd>${esc(ev.graph)}</dd>
+        <dt>nodes walked</dt><dd>${(ev.provenance?.nodes || []).length}</dd>
+        <dt>highlights</dt><dd>${focus.map(f => `<span class="chip">${esc(f)}</span>`).join('') || '&mdash;'}</dd>
+      </dl>
+      <pre>${esc(ev.cypher)}</pre>
+      <pre>${esc(JSON.stringify(ev.rows?.slice(0, 3), null, 1))}</pre>
+    </div>` : ''}`;
+  card.querySelector('.head').onclick = () => {
+    card.classList.toggle('open');
+    highlight(focus);
+  };
+  return card;
+}
+
+function verdictCard(v) {
+  const card = document.createElement('div');
+  card.className = 'card verdict open';
+  const steps = (v.runbook_steps || []).map(s => `<li>${esc(s)}</li>`).join('');
+  card.innerHTML = `
+    <div class="head"><span class="agent comms">verdict</span>
+      <span class="action">${esc(v.action)} &rarr; ${esc(v.runbook || 'none')}</span>
+      <span class="ms">confidence ${esc(v.confidence)}</span></div>
+    <div class="body">
+      <dl class="kv">
+        <dt>cause</dt><dd><b>${esc(v.cause)}</b> &middot; ${esc(v.version || '')}</dd>
+        <dt>deployed by</dt><dd>${esc(v.deployed_by)} <span class="chip real">real GitHub user</span></dd>
+        <dt>commit</dt><dd><code>${esc(v.sha)}</code> ${esc(v.change || '')}</dd>
+        <dt>severity</dt><dd>${esc(v.severity)} <span class="chip">${esc(v.sev1_because)}</span></dd>
+        <dt>impact</dt><dd>${esc(v.customers)} customers &middot; ${esc(v.mrr_at_risk)} MRR</dd>
+        <dt>path</dt><dd>${(v.path || []).map(p => esc(p)).join(' &rarr; ')}</dd>
+        <dt>page</dt><dd>${esc(v.page)}</dd>
+        <dt>pull in</dt><dd>${esc(v.pull_in)} &mdash; ${esc(v.page_reason)}</dd>
+        <dt>learned from</dt><dd>${esc(v.learned_from || '-')}</dd>
+      </dl>
+      ${steps ? `<h3 style="margin:12px 0 4px">runbook steps</h3><ol style="margin:0;padding-left:20px;font-size:12.5px">${steps}</ol>` : ''}
+    </div>`;
+  card.querySelector('.head').onclick = () => {
+    card.classList.toggle('open');
+    highlight([v.cause, ...(v.path || [])]);
+  };
+  return card;
+}
+
+async function runIncident() {
+  $('run').disabled = true;
+  $('panel').innerHTML = '';
+  $('status').textContent = 'running the three-agent loop...';
+  try {
+    const result = await api('/api/run', { method: 'POST' });
+    steps = result.steps;
+    const panel = $('panel');
+
+    const h = document.createElement('h3');
+    h.textContent = `${result.run_id} · ${result.tool_calls} tool calls · ${result.elapsed_ms} ms`;
+    panel.append(h);
+    result.steps.forEach((s, i) => panel.append(stepCard(s, i)));
+
+    if (result.ruled_out?.length) {
+      const rh = document.createElement('h3');
+      rh.textContent = 'ruled out, and why';
+      panel.append(rh);
+      for (const r of result.ruled_out) {
+        const c = document.createElement('div');
+        c.className = 'card ruled';
+        c.innerHTML = `<div class="head"><span class="action">${esc(r.service)}</span>
+          <span class="ms">score ${r.score}</span></div>
+          <div class="note">${esc(r.because)}</div>`;
+        c.querySelector('.head').onclick = () => highlight([r.service]);
+        panel.append(c);
+      }
+    }
+
+    const vh = document.createElement('h3'); vh.textContent = 'verdict';
+    panel.append(vh, verdictCard(result.verdict));
+    $('status').innerHTML = `chose <b>${esc(result.verdict.cause)}</b>, ruled out `
+      + `${result.ruled_out.length} alternative(s) &middot; click any card for its Cypher`;
+    highlight([result.verdict.cause, ...(result.verdict.path || [])]);
+  } catch (e) {
+    $('status').innerHTML = `<span class="err">${esc(e.message)}</span>`;
+  } finally {
+    $('run').disabled = false;
+  }
+}
+
+async function askAll() {
+  $('askAll').disabled = true;
+  $('panel').innerHTML = '';
+  // Clear any highlight left over from a previous incident run. Without this the canvas keeps
+  // showing the old walk -- pricing-legacy lit, everything else dimmed -- while the panel beside
+  // it has switched to the six questions. The two then disagree about what is being shown, which
+  // is worse than no highlight at all. Only visible in a rendered page, not in an endpoint check.
+  highlight(null);
+  const panel = $('panel');
+  const h = document.createElement('h3'); h.textContent = 'the six questions';
+  panel.append(h);
+  try {
+    const list = await api('/api/questions');
+    for (const q of list) {
+      const answer = await api('/api/ask/' + q.key);
+      const card = document.createElement('div');
+      card.className = 'card';
+      const focus = answer.provenance?.focus || [];
+      card.innerHTML = `
+        <div class="head"><span class="agent diagnosis">${esc(q.key)}</span>
+          <span class="action" style="font-weight:500">${esc(q.ask)}</span>
+          <span class="ms">${answer.elapsed_ms} ms</span></div>
+        <div class="note">${esc(q.why_graph)}</div>
+        <div class="body">
+          <pre>${esc(answer.cypher)}</pre>
+          <pre>${esc(JSON.stringify(answer.rows?.slice(0, 3), null, 1))}</pre>
+        </div>`;
+      card.querySelector('.head').onclick = () => { card.classList.toggle('open'); highlight(focus); };
+      panel.append(card);
+    }
+    $('status').textContent = 'six questions, each with the Cypher that answered it';
+  } catch (e) {
+    $('status').innerHTML = `<span class="err">${esc(e.message)}</span>`;
+  } finally {
+    $('askAll').disabled = false;
+  }
+}
+
+async function loadProvenance() {
+  try {
+    const p = await api('/api/provenance');
+    const totals = p.totals_by_source || {};
+    const parts = Object.entries(totals).sort()
+      .map(([src, n]) => `<span class="chip ${src === 'github' ? 'real' : 'syn'}">${esc(src)}: ${n}</span>`);
+    $('status').innerHTML = `data provenance ${parts.join('')} `
+      + `&middot; counted live in ${p.elapsed_ms} ms, not claimed in a README`;
+  } catch (e) { /* the run panel will surface auth problems */ }
+}
+
+$('run').onclick = runIncident;
+$('askAll').onclick = askAll;
+$('tenant').onchange = (e) => selectTenant(e.target.value);
+$('showCommits').onchange = loadGraph;
+boot();
+</script>
+</body>
+</html>
